@@ -1,0 +1,47 @@
+    prefer-no-csd
+    screenshot-path null
+
+    environment {
+        ELECTRON_OZONE_PLATFORM_HINT "auto"
+        QT_QPA_PLATFORM "wayland"
+        QT_QPA_PLATFORMTHEME "gtk3"
+        QT_WAYLAND_DISABLE_WINDOWDECORATION "1"
+        XDG_CURRENT_DESKTOP "niri"
+        XDG_SESSION_TYPE "wayland"
+        // DISPLAY is intentionally NOT set here — niri assigns it for its
+        // natively-managed xwayland-satellite (see the block below).
+
+        // CRITICAL for Precision Overcast: DMS runs matugen by default and
+        // regenerates its whole palette from the current wallpaper, which would
+        // silently overwrite our static theme on every wallpaper change. Setting
+        // this in the session environment (rather than wrapping `dms run`) means
+        // it also applies to `dms` invoked from a terminal or a keybind.
+        DMS_DISABLE_MATUGEN "1"
+    }
+
+    // X11 support: niri spawns and manages xwayland-satellite itself
+    // (on-demand, picks a free display, exports DISPLAY to spawned apps).
+    // Same path on Arch as on Fedora.
+    xwayland-satellite {
+        path "/usr/bin/xwayland-satellite"
+    }
+
+    cursor {
+        // Kumori's own cursor theme: generated from the Simp1e template with the
+        // Precision Overcast palette. install.sh puts it in
+        // ~/.local/share/icons. Inherits Adwaita for names it doesn't define.
+        xcursor-theme "Simp1e-Precision-Overcast"
+        // 24 *logical* px. On a HiDPI output that niri auto-scales x2 this
+        // renders 48 physical px. On a 1x display it renders 24, which is small
+        // — bump this to 32 or 48 if your monitor is not HiDPI.
+        xcursor-size 24
+    }
+
+    debug {
+        // Allows notification actions and window activation from the shell.
+        honor-xdg-activation-with-invalid-serial
+    }
+
+    hotkey-overlay {
+       skip-at-startup
+    }

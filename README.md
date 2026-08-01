@@ -98,6 +98,7 @@ enrolling your own keys. Review the script before turning it on.
 | `build_files/system_files/` | Files copied into the image (the `/etc/skel` niri, noctalia, ghostty, and GTK configs). |
 | `build_files/optional/cachyos-kernel.sh` | Opt-in CachyOS kernel swap. |
 | `disk_config/` | bootc-image-builder configs: `disk.toml` (qcow2), `iso.toml` (installer ISO). |
+| `_cachyos/` | Side port: the same desktop on CachyOS/Arch with DankMaterialShell instead of noctalia. Not part of the image build. |
 | `.github/workflows/` | `build.yml` (container image), `build-disk.yml` (qcow2 + ISO). |
 | `ATTRIBUTION.md` | Third-party attribution and licenses. |
 

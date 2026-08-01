@@ -1,0 +1,27 @@
+// ────────────── Startup Applications ──────────────
+// https://github.com/YaLTeR/niri/wiki/Configuration:-Miscellaneous#spawn-sh-at-startup
+//
+// CachyOS + DankMaterialShell variant. Differences from the Fedora/bootc image:
+//   - the shell is DMS (`dms run`), not noctalia (`qs -c noctalia-shell`)
+//   - the MATE polkit agent lives under /usr/lib on Arch, not /usr/libexec
+//   - cliphist is spawned for DMS's clipboard history panel
+
+    // Export session env into systemd --user + D-Bus so portals, the keyring,
+    // and user services know we're in a niri Wayland session.
+    spawn-at-startup "dbus-update-activation-environment" "--systemd" "WAYLAND_DISPLAY" "XDG_CURRENT_DESKTOP=niri"
+
+    // X11 app support: niri manages xwayland-satellite natively (see the
+    // xwayland-satellite block in misc.kdl). Do NOT spawn it here — a manual
+    // instance grabs DISPLAY :0 and makes niri disable its own integration.
+
+    // PolicyKit auth agent. DMS does not ship one, so we keep the MATE agent.
+    // Arch path differs from Fedora's /usr/libexec — verify after install with:
+    //   pacman -Ql mate-polkit | grep agent-1
+    spawn-at-startup "/usr/lib/mate-polkit/polkit-mate-authentication-agent-1"
+
+    // The DankMaterialShell desktop shell (bar, spotlight, notifications, OSD,
+    // control center, lock screen, wallpaper).
+    spawn-at-startup "dms" "run"
+
+    // Clipboard history backing store for DMS's clipboard panel (Mod+V).
+    spawn-sh-at-startup "wl-paste --watch cliphist store"

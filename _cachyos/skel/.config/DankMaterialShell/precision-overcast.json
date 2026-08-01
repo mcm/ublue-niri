@@ -1,0 +1,27 @@
+{
+  "name": "Precision Overcast",
+  "matugen_type": "scheme-neutral",
+
+  "primary": "#8eb5cc",
+  "primaryText": "#131a26",
+  "primaryContainer": "#4a7d9b",
+
+  "secondary": "#a8b3c4",
+  "surfaceTint": "#8eb5cc",
+
+  "surface": "#131a26",
+  "surfaceText": "#e2e7ee",
+  "surfaceVariant": "#1f2937",
+  "surfaceVariantText": "#a8b3c4",
+  "surfaceContainer": "#1f2937",
+  "surfaceContainerHigh": "#2a3445",
+  "surfaceContainerHighest": "#354152",
+
+  "background": "#131a26",
+  "backgroundText": "#e2e7ee",
+
+  "outline": "#54637a",
+  "error": "#b47362",
+  "warning": "#c9a368",
+  "info": "#8eb5cc"
+}
