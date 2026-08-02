@@ -215,7 +215,25 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
     msg "Enabling services…"
     sudo systemctl enable NetworkManager.service
     sudo systemctl enable bluetooth.service
-    [[ $WITH_GREETER -eq 1 ]] && sudo systemctl enable greetd.service
+
+    if [[ $WITH_GREETER -eq 1 ]]; then
+        # sddm and greetd both claim the display-manager.service alias, and
+        # systemd refuses to enable the second one while the first owns the
+        # symlink. sddm MUST be disabled before greetd is enabled — and two
+        # login managers racing for VT 1 is a worse outcome than either alone.
+        if systemctl is-enabled sddm.service >/dev/null 2>&1; then
+            warn "sddm.service is enabled and conflicts with greetd — disabling it."
+            sudo systemctl disable sddm.service
+        fi
+        # `systemctl disable` clears the alias it created, but not one written by
+        # hand (the bootc image does exactly that with ln -sf).
+        if [[ -L /etc/systemd/system/display-manager.service ]] &&
+           [[ "$(readlink -f /etc/systemd/system/display-manager.service)" == *sddm* ]]; then
+            warn "removing stale display-manager.service symlink pointing at sddm"
+            sudo rm -f /etc/systemd/system/display-manager.service
+        fi
+        sudo systemctl enable greetd.service
+    fi
     # pipewire/wireplumber are socket-activated per-user; no system enable.
 fi
 
@@ -324,13 +342,8 @@ if [[ $WITH_GREETER -eq 1 ]]; then
     # ReGreet caches last-user/last-session as the `greeter` user.
     sudo install -d -o greeter -g greeter -m755 /var/cache/regreet 2>/dev/null || true
 
-    # SDDM and greetd both want to own the login VT. Leaving sddm enabled while
-    # greetd is enabled gives whichever systemd starts first, which is a coin
-    # flip you do not want on a login screen.
-    if systemctl is-enabled sddm.service >/dev/null 2>&1; then
-        warn "sddm.service is enabled and conflicts with greetd — disabling it."
-        sudo systemctl disable sddm.service
-    fi
+    # (sddm is disabled and greetd enabled back in the Services section — the
+    # display-manager.service alias forces that ordering.)
 
     if [[ ! -f /usr/share/doc/greetd-regreet/regreet.sample.toml ]]; then
         warn "regreet.sample.toml not found; can't verify our regreet.toml keys."
