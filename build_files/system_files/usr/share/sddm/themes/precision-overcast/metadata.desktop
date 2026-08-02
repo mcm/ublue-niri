@@ -8,3 +8,9 @@ Version=1.0
 Website=https://github.com/mcm/kumori
 MainScript=Main.qml
 ConfigFile=theme.conf
+# SDDM 0.21+ runs a theme under the Qt5 greeter binary unless this says
+# otherwise. Main.qml uses QtQuick.Effects/MultiEffect (Qt6-only), so this theme
+# has always required the Qt6 greeter. Distros that ship Qt6 exclusively (Arch)
+# have no /usr/bin/sddm-greeter at all: without this key the greeter exits 127
+# and the login screen is black with only a cursor.
+QtVersion=6

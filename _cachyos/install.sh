@@ -2,33 +2,39 @@
 #
 # Kumori — CachyOS / Arch installer (niri + DankMaterialShell).
 #
-# Installs the Precision Overcast desktop for the *invoking user*. Unlike the
-# bootc image (which bakes everything into /etc/skel at build time), this is a
-# per-user install: everything lands under $HOME, and only `pacman` needs sudo.
+# Targets a CachyOS install where NO desktop was selected in the installer.
+# Everything a graphical session needs is installed here, so nothing is
+# inherited from a CachyOS desktop edition. (Installing on top of an existing
+# desktop edition also works, but see the noctalia-qs guard below.)
 #
-# Files come from two places:
-#   - this directory (_cachyos/skel)  -> the DMS/Arch-specific bits
-#   - ../build_files/system_files     -> everything that is identical to the
-#                                        Fedora image (ghostty, GTK, cursor
-#                                        theme, wallpaper, base niri config)
-# Nothing is duplicated between the two, so retheming the main tree also
-# retheme this install.
+# Split of responsibilities:
+#   - user configs      -> $HOME/.config          (per-user, no sudo)
+#   - shared assets     -> /usr/share             (sudo; the SDDM greeter runs
+#                          as the `sddm` system user and cannot read $HOME, so
+#                          fonts/cursors/wallpaper MUST be system-wide)
+#   - packages/services -> sudo pacman / systemctl
 #
-# Usage:  ./install.sh [--skip-packages] [--skip-fonts] [--yes]
+# Files come from two places, with nothing duplicated between them:
+#   - this directory (_cachyos/)   -> the DMS + Arch specific bits
+#   - ../build_files/system_files  -> everything identical to the bootc image
+#
+# Usage:  ./install.sh [--skip-packages] [--skip-fonts] [--no-greeter] [--yes]
 
 set -euo pipefail
 
 SKIP_PACKAGES=0
 SKIP_FONTS=0
+WITH_GREETER=1
 ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-packages) SKIP_PACKAGES=1 ;;
         --skip-fonts)    SKIP_FONTS=1 ;;
+        --no-greeter)    WITH_GREETER=0 ;;
         --yes|-y)        ASSUME_YES=1 ;;
         -h|--help)
-            sed -n '2,20p' "$0" | sed 's|^# \{0,1\}||'
+            sed -n '2,25p' "$0" | sed 's|^# \{0,1\}||'
             exit 0
             ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
@@ -55,17 +61,36 @@ die()  { printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 [[ $EUID -ne 0 ]]        || die "Run as your normal user, not root. sudo is invoked only where needed."
 [[ -d "$SRC_SKEL" ]]     || die "Cannot find $SRC_SKEL — run this from a full checkout of the repo."
 
+# The noctalia-qs trap: noctalia's quickshell build declares
+# `Provides: quickshell quickshell-git`, so `pacman -S dms-shell` finds its
+# quickshell dependency already satisfied and never installs the real thing.
+# DMS then runs on a much older shell: its service layer registers but its
+# entire UI layer silently fails to load — a bar that draws and hovers but does
+# nothing when clicked, and `dms ipc call spotlight toggle` -> "Target not
+# found". Catch it up front; it costs an evening to diagnose from the symptom.
+if [[ -e /usr/bin/qs ]]; then
+    QS_OWNER="$(pacman -Qoq /usr/bin/qs 2>/dev/null || true)"
+    if [[ -n "$QS_OWNER" && "$QS_OWNER" != "quickshell" ]]; then
+        die "/usr/bin/qs is owned by '$QS_OWNER', not 'quickshell'.
+    DMS will half-load against it. Remove the impostor and install the real
+    quickshell before re-running:
+        sudo pacman -Rdd $QS_OWNER
+        sudo pacman -S quickshell"
+    fi
+fi
+
 if [[ $ASSUME_YES -eq 0 ]]; then
     cat <<EOF
 
-This will install the Kumori (Precision Overcast) niri + DankMaterialShell
-desktop for user '$USER'.
+Installs the Kumori (Precision Overcast) niri + DankMaterialShell desktop
+for user '$USER' on CachyOS/Arch.
 
-It will write to:
-  $CFG/niri  $CFG/DankMaterialShell  $CFG/ghostty  $CFG/gtk-3.0  $CFG/gtk-4.0
-  $HOME/.local/share/{icons,fonts,backgrounds}
+Writes to:
+  $CFG/{niri,DankMaterialShell,ghostty,gtk-3.0,gtk-4.0}
+  /usr/share/{fonts,icons,backgrounds}/…$( [[ $WITH_GREETER -eq 1 ]] && printf '\n  /usr/share/sddm/themes/precision-overcast  +  /etc/sddm.conf.d/99-kumori.conf' )
 
-Existing files in those config dirs are backed up to <dir>.bak-$STAMP first.
+Installs packages and enables sddm/NetworkManager/bluetooth via sudo.
+Existing user configs are backed up to <dir>.bak-$STAMP first.
 
 EOF
     read -r -p "Continue? [y/N] " reply
@@ -76,36 +101,44 @@ fi
 ## 1. Packages
 #############################################
 
-# Packages that differ from the Fedora build.sh list:
-#   adw-gtk3-theme      -> adw-gtk-theme
-#   adwaita-cursor-theme-> adwaita-cursors
-#   noctalia-shell      -> dms-shell (+ dgop for the system-monitor widgets)
-#   ImageMagick         -> dropped (only needed to *generate* the theme, not run it)
-#   sddm, cage          -> dropped (CachyOS already ships and configures SDDM)
-# cliphist is new: DMS's clipboard panel needs it.
-CORE_PKGS=(
-    niri
-    xwayland-satellite
-    ghostty
-    zsh
-    wl-clipboard
-    cliphist
-    brightnessctl
-    ddcutil
-    wlr-randr
-    wlsunset
-    playerctl
-    mate-polkit
-    adw-gtk-theme
-    adwaita-cursors
-    xdg-desktop-portal-gtk
-    xdg-desktop-portal-gnome
-    nautilus
-    firefox
+# Compositor, shell, and the apps the niri keybinds reference.
+#   quickshell is named EXPLICITLY — never left to dms-shell's dependency
+#   resolution, for the provides-trap reason above.
+#   dgop backs DMS's system-monitor widgets.
+PKGS_DESKTOP=(
+    niri xwayland-satellite quickshell dms-shell dgop
+    ghostty nautilus firefox
 )
 
-# These may live in the AUR depending on how current your CachyOS repos are.
-# dms-shell pulls quickshell in as a dependency, so it is not listed separately.
+# Display manager. weston (not cage) backs the Wayland greeter — see
+# etc/sddm.conf.d/99-kumori.conf for why. qt6-wayland is not optional: without
+# it the Qt greeter has no Wayland platform plugin and dies on start.
+PKGS_GREETER=( sddm weston qt6-wayland qt6-declarative )
+
+# Base plumbing. A CachyOS desktop edition provides all of this; a no-desktop
+# install provides none of it. --needed makes these no-ops if already present.
+PKGS_BASE=(
+    networkmanager
+    pipewire pipewire-pulse pipewire-alsa wireplumber
+    bluez bluez-utils
+    polkit mate-polkit
+    xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-gnome
+    xdg-user-dirs gnome-keyring libsecret gvfs
+    power-profiles-daemon upower
+    noto-fonts noto-fonts-emoji noto-fonts-cjk
+    zsh
+)
+
+# Session utilities the niri config and DMS call out to.
+PKGS_UTILS=(
+    wl-clipboard cliphist brightnessctl ddcutil wlr-randr wlsunset playerctl
+    adw-gtk-theme adwaita-cursors
+)
+
+CORE_PKGS=( "${PKGS_DESKTOP[@]}" "${PKGS_BASE[@]}" "${PKGS_UTILS[@]}" )
+[[ $WITH_GREETER -eq 1 ]] && CORE_PKGS+=( "${PKGS_GREETER[@]}" )
+
+# dms-shell and dgop may not be in every CachyOS repo generation.
 MAYBE_AUR_PKGS=( dms-shell dgop )
 
 aur_helper() {
@@ -118,70 +151,109 @@ aur_helper() {
 if [[ $SKIP_PACKAGES -eq 1 ]]; then
     msg "Skipping package installation (--skip-packages)."
 else
-    # Check names before handing the whole list to pacman, so a single renamed
-    # package produces a clear message instead of a bulk depsolve failure.
-    # Most likely to drift: adw-gtk-theme and adwaita-cursors, which are named
-    # adw-gtk3-theme / adwaita-cursor-theme on Fedora.
+    # Check names before handing the list to pacman, so one renamed package
+    # gives a clear message instead of a bulk depsolve failure. Most likely to
+    # drift: adw-gtk-theme and adwaita-cursors (named adw-gtk3-theme /
+    # adwaita-cursor-theme on Fedora).
+    msg "Checking package names against your repos…"
     missing=()
     for pkg in "${CORE_PKGS[@]}"; do
         pacman -Si "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
     done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        warn "not found in your configured repos: ${missing[*]}"
+    # Anything in the maybe-AUR set is handled separately below, not an error.
+    filtered_missing=()
+    for m in "${missing[@]}"; do
+        skip=0
+        for a in "${MAYBE_AUR_PKGS[@]}"; do [[ "$m" == "$a" ]] && skip=1; done
+        [[ $skip -eq 0 ]] && filtered_missing+=("$m")
+    done
+
+    if [[ ${#filtered_missing[@]} -gt 0 ]]; then
+        warn "not found in your configured repos: ${filtered_missing[*]}"
         warn "Search for the current name with:  pacman -Ss <name>"
         if [[ $ASSUME_YES -eq 0 ]]; then
             read -r -p "Install the rest anyway? [y/N] " reply
-            [[ "$reply" =~ ^[Yy]$ ]] || die "Aborted. Fix the package names in CORE_PKGS and re-run."
+            [[ "$reply" =~ ^[Yy]$ ]] || die "Aborted. Fix the names and re-run."
         fi
-        # Drop the unknown names so the rest can still install.
-        for m in "${missing[@]}"; do
-            for i in "${!CORE_PKGS[@]}"; do
-                [[ "${CORE_PKGS[$i]}" == "$m" ]] && unset 'CORE_PKGS[i]'
-            done
-        done
-        CORE_PKGS=("${CORE_PKGS[@]}")
     fi
 
-    msg "Installing packages from the official repos…"
-    [[ ${#CORE_PKGS[@]} -gt 0 ]] && sudo pacman -S --needed "${CORE_PKGS[@]}"
+    # Drop every unresolvable name (including maybe-AUR ones) from the bulk run.
+    install_now=()
+    for pkg in "${CORE_PKGS[@]}"; do
+        skip=0
+        for m in "${missing[@]}"; do [[ "$pkg" == "$m" ]] && skip=1; done
+        [[ $skip -eq 0 ]] && install_now+=("$pkg")
+    done
+
+    msg "Installing ${#install_now[@]} packages…"
+    # --asexplicit so these are never swept up as orphans by a later -Rs.
+    # Plain `-S --needed` does NOT re-mark an already-installed dependency.
+    sudo pacman -S --needed --asexplicit "${install_now[@]}"
 
     for pkg in "${MAYBE_AUR_PKGS[@]}"; do
+        pacman -Qq "$pkg" >/dev/null 2>&1 && continue
         if pacman -Si "$pkg" >/dev/null 2>&1; then
-            msg "Installing $pkg from the repos…"
-            sudo pacman -S --needed "$pkg"
+            sudo pacman -S --needed --asexplicit "$pkg"
         elif helper="$(aur_helper)"; then
-            msg "$pkg is not in the repos; installing from the AUR with $helper…"
+            msg "$pkg not in the repos; installing from the AUR with $helper…"
             "$helper" -S --needed "$pkg"
         else
-            warn "$pkg is not in your repos and no AUR helper (paru/yay) was found."
-            warn "Install it manually — see https://danklinux.com/docs/dankmaterialshell/installation"
+            warn "$pkg missing and no AUR helper (paru/yay) found — install it manually."
+            warn "  https://danklinux.com/docs/dankmaterialshell/installation"
         fi
     done
 fi
 
 #############################################
-## 2. Brand fonts (Precision Overcast)
+## 2. Services
 #############################################
-# Schibsted Grotesk (sans) + Geist / Geist Mono are not in the Arch repos.
-# Same upstream variable TTFs (all OFL) the image build fetches.
+# A no-desktop CachyOS install enables NetworkManager and sshd but nothing
+# graphical. Everything here is idempotent.
+
+if [[ $SKIP_PACKAGES -eq 0 ]]; then
+    msg "Enabling services…"
+    sudo systemctl enable NetworkManager.service
+    sudo systemctl enable bluetooth.service
+    [[ $WITH_GREETER -eq 1 ]] && sudo systemctl enable sddm.service
+    # pipewire/wireplumber are socket-activated per-user; no system enable.
+fi
+
+#############################################
+## 3. Shared assets  ->  /usr/share
+#############################################
+# These MUST be system-wide, not in ~/.local/share: the SDDM greeter runs as
+# the `sddm` user and cannot read your home directory. A greeter with the theme
+# but no system fonts falls back to a default sans; with no system cursor theme
+# it draws the default arrow; with no system wallpaper it renders a blank
+# gradient. All three look like "the theme didn't apply".
 
 if [[ $SKIP_FONTS -eq 1 ]]; then
     msg "Skipping fonts (--skip-fonts)."
 else
-    FONTDIR="$HOME/.local/share/fonts/kumori"
-    msg "Fetching brand fonts into $FONTDIR…"
-    mkdir -p "$FONTDIR"
-    curl -fL --retry 3 -o "$FONTDIR/GeistMono.ttf" \
+    msg "Installing brand fonts to /usr/share/fonts/kumori…"
+    tmpfonts="$(mktemp -d)"
+    curl -fL --retry 3 -o "$tmpfonts/GeistMono.ttf" \
         "https://github.com/google/fonts/raw/main/ofl/geistmono/GeistMono%5Bwght%5D.ttf"
-    curl -fL --retry 3 -o "$FONTDIR/Geist.ttf" \
+    curl -fL --retry 3 -o "$tmpfonts/Geist.ttf" \
         "https://github.com/google/fonts/raw/main/ofl/geist/Geist%5Bwght%5D.ttf"
-    curl -fL --retry 3 -o "$FONTDIR/SchibstedGrotesk.ttf" \
+    curl -fL --retry 3 -o "$tmpfonts/SchibstedGrotesk.ttf" \
         "https://github.com/google/fonts/raw/main/ofl/schibstedgrotesk/SchibstedGrotesk%5Bwght%5D.ttf"
-    fc-cache -f "$FONTDIR" >/dev/null
+    sudo install -d -m755 /usr/share/fonts/kumori
+    sudo install -m644 "$tmpfonts"/*.ttf /usr/share/fonts/kumori/
+    rm -rf "$tmpfonts"
+    sudo fc-cache -f >/dev/null
 fi
 
+msg "Installing the Simp1e Precision Overcast cursor theme to /usr/share/icons…"
+sudo rm -rf /usr/share/icons/Simp1e-Precision-Overcast
+sudo cp -R "$SRC_SHARE/icons/Simp1e-Precision-Overcast" /usr/share/icons/
+
+msg "Installing the wallpaper to /usr/share/backgrounds/kumori…"
+sudo install -d -m755 /usr/share/backgrounds/kumori
+sudo install -m644 "$SRC_SHARE/backgrounds/kumori/kumori.jpg" /usr/share/backgrounds/kumori/
+
 #############################################
-## 3. Config files
+## 4. User configs  ->  ~/.config
 #############################################
 
 backup() {
@@ -192,22 +264,20 @@ backup() {
 
 mkdir -p "$CFG"
 
-# --- niri: base config from the main tree, DMS overrides from here ---
 msg "Installing niri config…"
 backup "$CFG/niri"
 mkdir -p "$CFG/niri/cfg"
 install -m644 "$SRC_SKEL/.config/niri/config.kdl" "$CFG/niri/config.kdl"
-# Identical to the Fedora image — no DMS/Arch differences.
+# Identical to the bootc image.
 for f in animation.kdl display.kdl input.kdl layout.kdl; do
     install -m644 "$SRC_SKEL/.config/niri/cfg/$f" "$CFG/niri/cfg/$f"
 done
-# DMS/Arch-specific: shell autostart, dms ipc keybinds, matugen kill-switch,
+# DMS + Arch specific: dms autostart, dms ipc keybinds, matugen kill-switch,
 # quickshell layer rule, Arch polkit path.
 for f in autostart.kdl keybinds.kdl misc.kdl rules.kdl; do
     install -m644 "$HERE/skel/.config/niri/cfg/$f" "$CFG/niri/cfg/$f"
 done
 
-# --- shell-agnostic theming, straight from the main tree ---
 msg "Installing ghostty + GTK theming…"
 for d in ghostty gtk-3.0 gtk-4.0; do
     backup "$CFG/$d"
@@ -215,72 +285,82 @@ for d in ghostty gtk-3.0 gtk-4.0; do
     cp -R "$SRC_SKEL/.config/$d/." "$CFG/$d/"
 done
 
-# --- DankMaterialShell ---
-# settings.json is owned by DMS at runtime (bar layout, widget state, …), so if
-# one already exists we merge our two theme keys into it rather than clobber it.
+# DMS owns settings.json at runtime (bar layout, widget state, …), so merge our
+# two theme keys into an existing file rather than clobbering it.
 msg "Installing DankMaterialShell theme…"
 DMSDIR="$CFG/DankMaterialShell"
 mkdir -p "$DMSDIR"
 install -m644 "$HERE/skel/.config/DankMaterialShell/precision-overcast.json" \
     "$DMSDIR/precision-overcast.json"
-
 THEME_PATH="$DMSDIR/precision-overcast.json"
-if [[ -f "$DMSDIR/settings.json" ]]; then
-    if command -v jq >/dev/null 2>&1; then
-        tmp="$(mktemp)"
-        jq --arg p "$THEME_PATH" \
-           '.currentThemeName = "custom" | .customThemeFile = $p' \
-           "$DMSDIR/settings.json" > "$tmp" && mv "$tmp" "$DMSDIR/settings.json"
-        msg "merged theme keys into your existing DMS settings.json"
-    else
-        backup "$DMSDIR/settings.json"
-        sed "s|__HOME__|$HOME|g" \
-            "$HERE/skel/.config/DankMaterialShell/settings.json" > "$DMSDIR/settings.json"
-        warn "jq not installed — wrote a fresh settings.json and backed up the old one."
-        warn "Install jq and re-run to merge instead, or restore your bar layout by hand."
-    fi
+
+if [[ -f "$DMSDIR/settings.json" ]] && command -v jq >/dev/null 2>&1; then
+    tmp="$(mktemp)"
+    jq --arg p "$THEME_PATH" \
+       '.currentThemeName = "custom" | .customThemeFile = $p' \
+       "$DMSDIR/settings.json" > "$tmp" && mv "$tmp" "$DMSDIR/settings.json"
+    msg "merged theme keys into your existing DMS settings.json"
 else
+    [[ -f "$DMSDIR/settings.json" ]] && {
+        backup "$DMSDIR/settings.json"
+        warn "jq not installed — wrote a fresh settings.json; old one backed up."
+    }
     sed "s|__HOME__|$HOME|g" \
         "$HERE/skel/.config/DankMaterialShell/settings.json" > "$DMSDIR/settings.json"
 fi
 
 #############################################
-## 4. Cursor theme, wallpaper
+## 5. SDDM greeter
 #############################################
 
-msg "Installing the Simp1e Precision Overcast cursor theme…"
-ICONDIR="$HOME/.local/share/icons"
-mkdir -p "$ICONDIR"
-backup "$ICONDIR/Simp1e-Precision-Overcast"
-cp -R "$SRC_SHARE/icons/Simp1e-Precision-Overcast" "$ICONDIR/"
+if [[ $WITH_GREETER -eq 1 ]]; then
+    msg "Installing the Precision Overcast greeter…"
+    sudo rm -rf /usr/share/sddm/themes/precision-overcast
+    sudo install -d -m755 /usr/share/sddm/themes
+    sudo cp -R "$SRC_SHARE/sddm/themes/precision-overcast" /usr/share/sddm/themes/
 
-msg "Installing the wallpaper…"
-WALLDIR="$HOME/.local/share/backgrounds/kumori"
-mkdir -p "$WALLDIR"
-cp "$SRC_SHARE/backgrounds/kumori/kumori.jpg" "$WALLDIR/"
+    # SDDM 0.21+ runs a theme under the Qt5 greeter unless metadata.desktop says
+    # otherwise. Arch ships Qt6 only, so without this the greeter exits 127
+    # ("command not found" for /usr/bin/sddm-greeter) and you get a black screen
+    # with a cursor. Main.qml uses QtQuick.Effects/MultiEffect — Qt6-only — so
+    # the theme has always required the Qt6 greeter.
+    META=/usr/share/sddm/themes/precision-overcast/metadata.desktop
+    if [[ ! -f "$META" ]]; then
+        die "greeter theme did not install ($META missing) — cannot continue."
+    elif ! grep -q '^QtVersion=' "$META"; then
+        echo 'QtVersion=6' | sudo tee -a "$META" >/dev/null
+    fi
+
+    # /etc/sddm.conf.d/ is not shipped by the sddm package.
+    sudo install -d -m755 /etc/sddm.conf.d
+    sudo install -m644 "$HERE/etc/sddm.conf.d/99-kumori.conf" /etc/sddm.conf.d/99-kumori.conf
+
+    # /etc/sddm.conf loads LAST and beats every drop-in. CachyOS's installer
+    # writes one for some editions.
+    if [[ -f /etc/sddm.conf ]] && grep -qE '^\s*(Current|DisplayServer)\s*=' /etc/sddm.conf; then
+        warn "/etc/sddm.conf sets Theme/DisplayServer and overrides our drop-in."
+        warn "Remove those keys (nothing owns that file) or the greeter won't apply."
+    fi
+fi
 
 #############################################
-## 5. Appearance defaults
+## 6. Appearance defaults
 #############################################
-# The image ships these as a system dconf db (/etc/dconf/db/local.d). Here we
-# write them to the user's own dconf db instead — same effect, no sudo. Under
-# niri there is no GNOME settings daemon, so without this libadwaita apps render
-# light and the Precision Overcast gtk.css recolor looks inconsistent.
+# The bootc image ships these as a system dconf db. Per-user here — same effect,
+# no sudo. Under niri there is no GNOME settings daemon, so without this
+# libadwaita apps render light and the gtk.css recolor looks inconsistent.
 
 if command -v gsettings >/dev/null 2>&1; then
     msg "Setting GTK appearance defaults…"
-    # Deliberately non-fatal: a missing schema must not abort an otherwise
-    # complete install (and must not skip the "next steps" notes below).
     gset() {
         gsettings set org.gnome.desktop.interface "$1" "$2" 2>/dev/null \
-            || warn "could not set $1 (schema missing?) — set it by hand if apps render light."
+            || warn "could not set $1 (schema missing?)"
     }
     gset color-scheme 'prefer-dark'
     gset gtk-theme 'adw-gtk3-dark'
     gset cursor-theme 'Simp1e-Precision-Overcast'
     gset font-name 'Schibsted Grotesk 10'
     gset monospace-font-name 'Geist Mono 11'
-    # Closest built-in accent enum to Glacier; exact hex comes from gtk.css.
     gset accent-color 'slate'
 else
     warn "gsettings not found — GTK4/libadwaita apps may render light."
@@ -295,21 +375,18 @@ cat <<EOF
 $(msg "Done.")
 
 Next steps:
-  1. Log out and pick the "niri" session in SDDM.
-  2. Set the wallpaper once — DMS does not read a directory the way noctalia did:
-       dms ipc call wallpaper set $WALLDIR/kumori.jpg
-  3. Set the shell fonts in DMS: Settings -> Appearance, choose
-     "Schibsted Grotesk" (UI) and "Geist Mono" (fixed). These are not set by
-     this script because the DMS settings.json key names are not documented.
+  1. Reboot (or: sudo systemctl start sddm) and log in to the niri session.
+  2. Set the wallpaper once — DMS has no wallpaper-directory setting:
+       dms ipc call wallpaper set /usr/share/backgrounds/kumori/kumori.jpg
+  3. Set the shell fonts in DMS: Settings -> Appearance, "Schibsted Grotesk"
+     (UI) and "Geist Mono" (fixed). Not scripted — the settings.json key names
+     for fonts are undocumented and guessing at them corrupts the file.
 
 Notes:
-  - Static theming: DMS_DISABLE_MATUGEN=1 is set in niri's environment block
-    (cfg/misc.kdl). Without it, DMS regenerates its palette from the wallpaper
-    and overwrites Precision Overcast.
-  - If DMS's "Application Theming" feature is on, it may overwrite
-    ~/.config/gtk-3.0/gtk.css. Turn it off to keep the hand-tuned recolor.
-  - Verify the polkit agent path (cfg/autostart.kdl) if auth dialogs never appear:
-       pacman -Ql mate-polkit | grep agent-1
+  - Static theming depends on DMS_DISABLE_MATUGEN=1, set in niri's environment
+    block (cfg/misc.kdl). Without it DMS regenerates its palette from the
+    wallpaper and overwrites Precision Overcast.
+  - If DMS's "Application Theming" is on it may overwrite ~/.config/gtk-3.0/gtk.css.
   - Backups from this run are suffixed .bak-$STAMP
 
 EOF

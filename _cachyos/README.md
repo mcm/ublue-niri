@@ -58,10 +58,74 @@ also retheme this install — there is no second copy to keep in sync.
 `gtk.css` + `settings.ini` pairs, the Simp1e Precision Overcast cursor theme, and
 the wallpaper.
 
-**Not ported:** the SDDM `precision-overcast` greeter theme and
-`sddm.conf.d/10-kumori.conf`. CachyOS ships and configures its own SDDM; adopting
-ours means resolving a `[Theme] Current` conflict. Both files port cleanly if you
-want them — `sddm` and `cage` are both in the Arch repos.
+**The greeter is ported**, with changes — see "The SDDM greeter" below.
+
+## Install target
+
+This assumes a CachyOS install where **no desktop was selected** in the
+installer. `install.sh` installs the entire graphical stack itself: compositor,
+shell, display manager, pipewire, NetworkManager, portals, keyring, and base
+fonts. Nothing is inherited from a CachyOS desktop edition.
+
+Installing on top of an existing CachyOS desktop edition works too, but the Niri
+edition in particular carries a trap — see "quickshell, not noctalia-qs" below.
+
+## The SDDM greeter
+
+Ported, but not verbatim. Three changes were needed, each found the hard way:
+
+**weston, not cage.** The image runs `cage -s` because Fedora's weston kiosk
+shell drew no cursor. Neither half of that holds on Arch: weston renders the
+cursor correctly, and `cage -s` with no application argument has *no exit
+condition* — it keeps running after the greeter client disconnects, holds DRM
+master, and the niri session comes up to a frozen screen showing a stale frame.
+The comment in the image's config describing the bare-compositor behavior as a
+feature is describing the bug.
+
+**`QtVersion=6` in `metadata.desktop`.** SDDM 0.21+ runs a theme under the *Qt5*
+greeter binary unless the metadata says otherwise. Arch ships Qt6 only, so
+`/usr/bin/sddm-greeter` doesn't exist and the greeter exits 127 immediately —
+a black screen with a cursor, and nothing in the journal but an exit code.
+Fixed in the shared tree, since `Main.qml` uses Qt6-only imports and the theme
+always required this.
+
+**`99-` not `10-`.** SDDM loads `/usr/lib/sddm/sddm.conf.d/*`, then
+`/etc/sddm.conf.d/*` (both alphabetically), then `/etc/sddm.conf` last, with
+later winning. A `10-` prefix loses to nearly anything a distro ships.
+`/etc/sddm.conf` beats every drop-in regardless; `install.sh` warns if one
+exists with conflicting keys. Note that `/etc/sddm.conf.d/` is not created by
+the `sddm` package — the script creates it.
+
+**Assets must be system-wide.** The greeter runs as the `sddm` user and cannot
+read `$HOME`. Fonts, the cursor theme, and the wallpaper all install to
+`/usr/share`, not `~/.local/share`. A greeter with none of them still renders —
+it just falls back to a default sans, the default arrow cursor, and no
+wallpaper, which reads as "the theme didn't apply."
+
+Skip all of it with `--no-greeter`.
+
+## quickshell, not noctalia-qs
+
+`noctalia-qs` declares `Provides: quickshell quickshell-git`. If it's installed —
+and it is, on the CachyOS Niri edition — then `pacman -S dms-shell` finds its
+quickshell dependency already satisfied and never installs the real package. DMS
+then runs against a much older shell, and fails in a way that looks like
+anything but a version problem: the service layer registers fine while the
+entire UI layer silently doesn't. The bar draws and responds to hover, clicks do
+nothing, and `dms ipc call spotlight toggle` returns "Target not found."
+
+`install.sh` names `quickshell` explicitly and refuses to run if `/usr/bin/qs`
+is owned by anything else. To fix it by hand:
+
+```
+sudo pacman -Rdd noctalia-qs      # -Rdd: don't cascade into cachyos-niri-noctalia
+sudo pacman -S quickshell
+```
+
+Note that `pacman -S --needed` does **not** re-mark an already-installed
+dependency as explicit, so packages pulled in by a CachyOS desktop metapackage
+stay dependencies and remain exposed to `-Rs` cascades. The script passes
+`--asexplicit` for this reason.
 
 ## The palette mapping
 

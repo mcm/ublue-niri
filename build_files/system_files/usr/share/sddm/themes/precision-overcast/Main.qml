@@ -49,6 +49,10 @@ Rectangle {
         anchors.fill: parent
         source: "file:///usr/share/backgrounds/kumori/kumori.jpg"
         fillMode: Image.PreserveAspectCrop
+        // Decode at screen size. The source is 4752x3168 (~60MB uncompressed);
+        // without this the greeter pushes all of it through the blur chain.
+        sourceSize.width: root.width
+        sourceSize.height: root.height
         cache: true
         asynchronous: true
         visible: false
