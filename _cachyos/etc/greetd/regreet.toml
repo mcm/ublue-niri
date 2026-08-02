@@ -1,0 +1,26 @@
+# Kumori — ReGreet configuration, themed "Precision Overcast".
+#
+# Verify key names against the shipped sample if anything is ignored:
+#   /usr/share/doc/greetd-regreet/regreet.sample.toml
+#
+# Widget colours come from regreet.css (GTK4 CSS) alongside this file. This file
+# covers what CSS cannot: the background image and the GTK/icon/cursor/font
+# settings ReGreet applies to its GTK context before styling.
+#
+# Everything referenced here must be readable by the `greeter` user, so it all
+# lives under /usr/share — never $HOME. install.sh puts it there.
+
+[background]
+path = "/usr/share/backgrounds/kumori/kumori.jpg"
+fit = "Cover"
+
+[GTK]
+application_prefer_dark_theme = true
+cursor_theme_name = "Simp1e-Precision-Overcast"
+font_name = "Schibsted Grotesk 11"
+icon_theme_name = "Adwaita"
+theme_name = "adw-gtk3-dark"
+
+[commands]
+reboot = ["systemctl", "reboot"]
+poweroff = ["systemctl", "poweroff"]

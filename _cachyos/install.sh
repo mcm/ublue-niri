@@ -9,8 +9,8 @@
 #
 # Split of responsibilities:
 #   - user configs      -> $HOME/.config          (per-user, no sudo)
-#   - shared assets     -> /usr/share             (sudo; the SDDM greeter runs
-#                          as the `sddm` system user and cannot read $HOME, so
+#   - shared assets     -> /usr/share             (sudo; the greeter runs as the
+#                          `greeter` system user and cannot read $HOME, so
 #                          fonts/cursors/wallpaper MUST be system-wide)
 #   - packages/services -> sudo pacman / systemctl
 #
@@ -87,9 +87,9 @@ for user '$USER' on CachyOS/Arch.
 
 Writes to:
   $CFG/{niri,DankMaterialShell,ghostty,gtk-3.0,gtk-4.0}
-  /usr/share/{fonts,icons,backgrounds}/…$( [[ $WITH_GREETER -eq 1 ]] && printf '\n  /usr/share/sddm/themes/precision-overcast  +  /etc/sddm.conf.d/99-kumori.conf' )
+  /usr/share/{fonts,icons,backgrounds}/…$( [[ $WITH_GREETER -eq 1 ]] && printf '\n  /etc/greetd/{config,regreet}.toml + regreet.css' )
 
-Installs packages and enables sddm/NetworkManager/bluetooth via sudo.
+Installs packages and enables greetd/NetworkManager/bluetooth via sudo.
 Existing user configs are backed up to <dir>.bak-$STAMP first.
 
 EOF
@@ -110,10 +110,11 @@ PKGS_DESKTOP=(
     ghostty nautilus firefox
 )
 
-# Display manager. weston (not cage) backs the Wayland greeter — see
-# etc/sddm.conf.d/99-kumori.conf for why. qt6-wayland is not optional: without
-# it the Qt greeter has no Wayland platform plugin and dies on start.
-PKGS_GREETER=( sddm weston qt6-wayland qt6-declarative )
+# Login manager: greetd + ReGreet, running under cage. NOT sddm — see
+# etc/greetd/config.toml for the full reasoning. greetd waits for the greeter to
+# exit before starting the session; SDDM does not, and losing that race leaves
+# niri rendering into a CRTC that no longer scans out.
+PKGS_GREETER=( greetd greetd-regreet cage )
 
 # Base plumbing. A CachyOS desktop edition provides all of this; a no-desktop
 # install provides none of it. --needed makes these no-ops if already present.
@@ -214,18 +215,18 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
     msg "Enabling services…"
     sudo systemctl enable NetworkManager.service
     sudo systemctl enable bluetooth.service
-    [[ $WITH_GREETER -eq 1 ]] && sudo systemctl enable sddm.service
+    [[ $WITH_GREETER -eq 1 ]] && sudo systemctl enable greetd.service
     # pipewire/wireplumber are socket-activated per-user; no system enable.
 fi
 
 #############################################
 ## 3. Shared assets  ->  /usr/share
 #############################################
-# These MUST be system-wide, not in ~/.local/share: the SDDM greeter runs as
-# the `sddm` user and cannot read your home directory. A greeter with the theme
-# but no system fonts falls back to a default sans; with no system cursor theme
-# it draws the default arrow; with no system wallpaper it renders a blank
-# gradient. All three look like "the theme didn't apply".
+# These MUST be system-wide, not in ~/.local/share: the greeter runs as the
+# `greeter` user and cannot read your home directory. With no system fonts it
+# falls back to a default sans; with no system cursor theme it draws the default
+# arrow; with no system wallpaper it renders a flat background. All three look
+# like "the theme didn't apply".
 
 if [[ $SKIP_FONTS -eq 1 ]]; then
     msg "Skipping fonts (--skip-fonts)."
@@ -314,32 +315,25 @@ fi
 #############################################
 
 if [[ $WITH_GREETER -eq 1 ]]; then
-    msg "Installing the Precision Overcast greeter…"
-    sudo rm -rf /usr/share/sddm/themes/precision-overcast
-    sudo install -d -m755 /usr/share/sddm/themes
-    sudo cp -R "$SRC_SHARE/sddm/themes/precision-overcast" /usr/share/sddm/themes/
+    msg "Installing the Precision Overcast greeter (greetd + ReGreet)…"
+    sudo install -d -m755 /etc/greetd
+    sudo install -m644 "$HERE/etc/greetd/config.toml"  /etc/greetd/config.toml
+    sudo install -m644 "$HERE/etc/greetd/regreet.toml" /etc/greetd/regreet.toml
+    sudo install -m644 "$HERE/etc/greetd/regreet.css"  /etc/greetd/regreet.css
 
-    # SDDM 0.21+ runs a theme under the Qt5 greeter unless metadata.desktop says
-    # otherwise. Arch ships Qt6 only, so without this the greeter exits 127
-    # ("command not found" for /usr/bin/sddm-greeter) and you get a black screen
-    # with a cursor. Main.qml uses QtQuick.Effects/MultiEffect — Qt6-only — so
-    # the theme has always required the Qt6 greeter.
-    META=/usr/share/sddm/themes/precision-overcast/metadata.desktop
-    if [[ ! -f "$META" ]]; then
-        die "greeter theme did not install ($META missing) — cannot continue."
-    elif ! grep -q '^QtVersion=' "$META"; then
-        echo 'QtVersion=6' | sudo tee -a "$META" >/dev/null
+    # ReGreet caches last-user/last-session as the `greeter` user.
+    sudo install -d -o greeter -g greeter -m755 /var/cache/regreet 2>/dev/null || true
+
+    # SDDM and greetd both want to own the login VT. Leaving sddm enabled while
+    # greetd is enabled gives whichever systemd starts first, which is a coin
+    # flip you do not want on a login screen.
+    if systemctl is-enabled sddm.service >/dev/null 2>&1; then
+        warn "sddm.service is enabled and conflicts with greetd — disabling it."
+        sudo systemctl disable sddm.service
     fi
 
-    # /etc/sddm.conf.d/ is not shipped by the sddm package.
-    sudo install -d -m755 /etc/sddm.conf.d
-    sudo install -m644 "$HERE/etc/sddm.conf.d/99-kumori.conf" /etc/sddm.conf.d/99-kumori.conf
-
-    # /etc/sddm.conf loads LAST and beats every drop-in. CachyOS's installer
-    # writes one for some editions.
-    if [[ -f /etc/sddm.conf ]] && grep -qE '^\s*(Current|DisplayServer)\s*=' /etc/sddm.conf; then
-        warn "/etc/sddm.conf sets Theme/DisplayServer and overrides our drop-in."
-        warn "Remove those keys (nothing owns that file) or the greeter won't apply."
+    if [[ ! -f /usr/share/doc/greetd-regreet/regreet.sample.toml ]]; then
+        warn "regreet.sample.toml not found; can't verify our regreet.toml keys."
     fi
 fi
 
@@ -375,7 +369,7 @@ cat <<EOF
 $(msg "Done.")
 
 Next steps:
-  1. Reboot (or: sudo systemctl start sddm) and log in to the niri session.
+  1. Reboot (or: sudo systemctl start greetd) and log in to the niri session.
   2. Set the wallpaper once — DMS has no wallpaper-directory setting:
        dms ipc call wallpaper set /usr/share/backgrounds/kumori/kumori.jpg
   3. Set the shell fonts in DMS: Settings -> Appearance, "Schibsted Grotesk"
@@ -388,5 +382,8 @@ Notes:
     wallpaper and overwrites Precision Overcast.
   - If DMS's "Application Theming" is on it may overwrite ~/.config/gtk-3.0/gtk.css.
   - Backups from this run are suffixed .bak-$STAMP
+  - If a login ever comes up to a frozen screen, recover with a modeset kick
+    rather than restarting the login manager:
+       niri msg output eDP-1 off && niri msg output eDP-1 on
 
 EOF

@@ -1,0 +1,24 @@
+# Kumori — greetd configuration (CachyOS / Arch).
+#
+# Replaces SDDM. greetd's model is deliberately small: run one greeter, wait for
+# it to exit, then start the session. That sequencing is why we're here — SDDM's
+# Wayland path starts the session while the greeter is still tearing down, and
+# when the greeter's compositor loses that race it restores the CRTC state after
+# niri has already set its mode. niri keeps rendering happily into a CRTC that
+# isn't scanning out: healthy logs, live IPC, frozen screen.
+#
+# cage is correct here in a way it was not under SDDM. SDDM ran `cage -s` bare,
+# with no primary client, so it had no exit condition and held DRM master
+# forever. With `-- regreet` it has a client, exits when regreet exits, and
+# releases the device. It also draws a compositor-side cursor (wlroots does this
+# unconditionally), which weston's kiosk shell does not.
+#
+#   -s       keep VT switching available (don't lock yourself out)
+#   -mlast   use the last-connected monitor only; regreet is single-monitor
+
+[terminal]
+vt = 1
+
+[default_session]
+command = "cage -s -mlast -- regreet"
+user = "greeter"

@@ -27,14 +27,14 @@ cd kumori/_cachyos
 ./install.sh
 ```
 
-Flags: `--skip-packages`, `--skip-fonts`, `--yes`.
+Flags: `--skip-packages`, `--skip-fonts`, `--no-greeter`, `--yes`.
 
-The script is per-user and only calls `sudo` for `pacman`. Everything it writes
-lands in `~/.config` and `~/.local/share`. Existing configs in those locations
-are moved aside to `<name>.bak-<timestamp>` before anything is written, so a
-re-run is safe and reversible.
+Your own configuration lands in `~/.config`; shared assets, packages, and the
+greeter are system-wide and use `sudo`. Existing user configs are moved aside to
+`<name>.bak-<timestamp>` before anything is written, so a re-run is safe and
+reversible.
 
-Then log out and pick the **niri** session.
+Then reboot and log in — ReGreet defaults to the niri session.
 
 ## What's in here vs. sourced from the main tree
 
@@ -58,7 +58,7 @@ also retheme this install — there is no second copy to keep in sync.
 `gtk.css` + `settings.ini` pairs, the Simp1e Precision Overcast cursor theme, and
 the wallpaper.
 
-**The greeter is ported**, with changes — see "The SDDM greeter" below.
+**The greeter is ported**, but replaced — see "The greeter" below.
 
 ## Install target
 
@@ -70,39 +70,59 @@ fonts. Nothing is inherited from a CachyOS desktop edition.
 Installing on top of an existing CachyOS desktop edition works too, but the Niri
 edition in particular carries a trap — see "quickshell, not noctalia-qs" below.
 
-## The SDDM greeter
+## The greeter: greetd + ReGreet, not SDDM
 
-Ported, but not verbatim. Three changes were needed, each found the hard way:
+The image's SDDM greeter does not survive the port. Four separate failures,
+each found on real hardware:
 
-**weston, not cage.** The image runs `cage -s` because Fedora's weston kiosk
-shell drew no cursor. Neither half of that holds on Arch: weston renders the
-cursor correctly, and `cage -s` with no application argument has *no exit
-condition* — it keeps running after the greeter client disconnects, holds DRM
-master, and the niri session comes up to a frozen screen showing a stale frame.
-The comment in the image's config describing the bare-compositor behavior as a
-feature is describing the bug.
+**Qt5 vs Qt6.** SDDM 0.21+ runs a theme under the *Qt5* greeter binary unless
+`metadata.desktop` says `QtVersion=6`. Arch ships Qt6 only, so
+`/usr/bin/sddm-greeter` doesn't exist and the greeter exits 127 — black screen,
+a cursor, and nothing in the journal but an exit code. Fixed in the shared tree
+regardless, since `Main.qml` has always used Qt6-only imports.
 
-**`QtVersion=6` in `metadata.desktop`.** SDDM 0.21+ runs a theme under the *Qt5*
-greeter binary unless the metadata says otherwise. Arch ships Qt6 only, so
-`/usr/bin/sddm-greeter` doesn't exist and the greeter exits 127 immediately —
-a black screen with a cursor, and nothing in the journal but an exit code.
-Fixed in the shared tree, since `Main.qml` uses Qt6-only imports and the theme
-always required this.
+**`cage -s` never exits.** With no application argument it has no exit
+condition, so it outlives the greeter, keeps DRM master, and the session comes
+up frozen. The image's config describes this bare-compositor behavior as a
+feature; it's the bug.
 
-**`99-` not `10-`.** SDDM loads `/usr/lib/sddm/sddm.conf.d/*`, then
-`/etc/sddm.conf.d/*` (both alphabetically), then `/etc/sddm.conf` last, with
-later winning. A `10-` prefix loses to nearly anything a distro ships.
-`/etc/sddm.conf` beats every drop-in regardless; `install.sh` warns if one
-exists with conflicting keys. Note that `/etc/sddm.conf.d/` is not created by
-the `sddm` package — the script creates it.
+**A teardown race with no fix.** On a failing login the log shows `Session
+started true` *before* `Greeter stopped`. The greeter's compositor restores the
+CRTC state as it exits — after niri has already set its mode. niri then renders
+into a CRTC that isn't scanning out: healthy logs, live IPC, correct VT, windows
+spawning and being laid out, and a frozen screen. `niri msg output eDP-1 off &&
+niri msg output eDP-1 on` brings it back, which is how the mechanism was
+confirmed. SDDM exposes no setting to make it wait.
 
-**Assets must be system-wide.** The greeter runs as the `sddm` user and cannot
-read `$HOME`. Fonts, the cursor theme, and the wallpaper all install to
-`/usr/share`, not `~/.local/share`. A greeter with none of them still renders —
-it just falls back to a default sans, the default arrow cursor, and no
-wallpaper, which reads as "the theme didn't apply."
+**No greeter cursor.** In Wayland the cursor is the client's responsibility and
+weston's kiosk shell paints no fallback.
 
-Skip all of it with `--no-greeter`.
+greetd removes all four structurally: it runs one greeter, waits for it to exit,
+then starts the session. cage becomes correct under it because `cage -s -mlast
+-- regreet` *has* a client and exits with it — and being wlroots, it draws a
+compositor-side cursor unconditionally.
+
+ReGreet is GTK, so Precision Overcast applies as ordinary GTK4 CSS
+(`etc/greetd/regreet.css`) rather than a parallel QML theme, and you get user
+and session dropdowns instead of a username text field.
+
+**Assets must be system-wide.** The greeter runs as the `greeter` user and
+cannot read `$HOME`. Fonts, cursor theme, and wallpaper install to
+`/usr/share`. Without that the greeter still renders — just with a fallback
+font, the default arrow cursor, and no wallpaper, which reads as "the theme
+didn't apply."
+
+Skip the whole thing with `--no-greeter`.
+
+### If a login comes up frozen
+
+```
+niri msg output eDP-1 off && niri msg output eDP-1 on
+```
+
+Do **not** restart the login manager to recover. `sddm.service` ships
+`Restart=always` with `RestartUSec=100ms`, so restarting it spawns a fresh
+greeter that takes DRM master from your live session and makes things worse.
 
 ## quickshell, not noctalia-qs
 
